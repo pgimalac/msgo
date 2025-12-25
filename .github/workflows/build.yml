@@ -8,11 +8,13 @@
 name: "Build Microsoft Go"
 
 on:
+  push:
   workflow_dispatch:
     inputs:
       bootstrap_go_version:
         description: 'Bootstrap Go version to use for building (e.g., 1.25.0)'
-        required: true
+        required: false
+        default: '1.25.5'
         type: string
       publish_artifacts:
         description: 'Publish artifacts publicly'
@@ -75,7 +77,7 @@ jobs:
       - name: Set up Go (bootstrap)
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ inputs.bootstrap_go_version }}
+          go-version: ${{ inputs.bootstrap_go_version || '1.25.5' }}
           cache: false
 
       - name: Install git-go-patch tool
