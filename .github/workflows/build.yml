@@ -77,10 +77,9 @@ jobs:
           if [ -n "${{ inputs.bootstrap_go_version }}" ]; then
             VERSION="${{ inputs.bootstrap_go_version }}"
           else
-            # Extract version from tag, stripping the 'v' prefix and anything after a dash
+            # Extract version from tag, stripping the 'v' prefix
             VERSION="${{ github.ref_name }}"
             VERSION="${VERSION#v}"
-            VERSION="${VERSION%-*}"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Bootstrap Go version: $VERSION"
@@ -96,6 +95,7 @@ jobs:
         run: |
           # Convert RC format: 1.26rc1 -> 1.26.0-rc.1
           VERSION="${{ steps.bootstrap_version.outputs.version }}"
+          VERSION="${VERSION%-*}" # remove anything after a dash
           if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
             VERSION="${BASH_REMATCH[1]}.0-rc.${BASH_REMATCH[2]}"
           fi
@@ -123,7 +123,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          echo "${{ steps.bootstrap_version.outputs.version }}" > go/VERSION
+          VERSION="${{ steps.bootstrap_version.outputs.version }}"
+          echo "${VERSION%-*}" > go/VERSION
           echo "VERSION file contents: $(cat go/VERSION)"
 
       - name: Build Go toolchain (Unix)
@@ -161,23 +162,11 @@ jobs:
       #     ..\bin\go.exe test -short ./...
       #   continue-on-error: true
 
-      - name: Get Go version
-        id: go_version
-        shell: bash
-        run: |
-          if [ -f "VERSION" ]; then
-            VERSION=$(head -1 VERSION)
-          else
-            VERSION=$(./go/bin/go version | awk '{print $3}')
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Go version: $VERSION"
-
       - name: Create archive (Unix)
         if: matrix.target_os != 'windows'
         run: |
           DISPLAY_ARCH="${{ matrix.display_arch || matrix.target_arch }}"
-          ARCHIVE_NAME="go${{ steps.go_version.outputs.version }}.${{ matrix.target_os }}-${DISPLAY_ARCH}.${{ matrix.archive_ext }}"
+          ARCHIVE_NAME="go${{ steps.bootstrap_version.outputs.version }}.${{ matrix.target_os }}-${DISPLAY_ARCH}.${{ matrix.archive_ext }}"
           mkdir -p artifacts
           tar -czf "artifacts/${ARCHIVE_NAME}" -C . go
           sha256sum "artifacts/${ARCHIVE_NAME}" | awk '{print $1}' > "artifacts/${ARCHIVE_NAME}.sha256"
@@ -187,7 +176,7 @@ jobs:
       - name: Create archive (Windows)
         if: matrix.target_os == 'windows'
         run: |
-          $ArchiveName = "go${{ steps.go_version.outputs.version }}.${{ matrix.target_os }}-${{ matrix.target_arch }}.${{ matrix.archive_ext }}"
+          $ArchiveName = "go${{ steps.bootstrap_version.outputs.version }}.${{ matrix.target_os }}-${{ matrix.target_arch }}.${{ matrix.archive_ext }}"
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Compress-Archive -Path go -DestinationPath "artifacts\$ArchiveName"
           (Get-FileHash -Algorithm SHA256 "artifacts\$ArchiveName").Hash.ToLower() | Out-File -NoNewline "artifacts\$ArchiveName.sha256"
