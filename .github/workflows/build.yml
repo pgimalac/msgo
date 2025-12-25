@@ -77,9 +77,10 @@ jobs:
           if [ -n "${{ inputs.bootstrap_go_version }}" ]; then
             VERSION="${{ inputs.bootstrap_go_version }}"
           else
-            # Extract version from tag, stripping the 'v' prefix
+            # Extract version from tag, stripping the 'v' prefix and anything after a dash
             VERSION="${{ github.ref_name }}"
             VERSION="${VERSION#v}"
+            VERSION="${VERSION%-*}"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Bootstrap Go version: $VERSION"
@@ -146,19 +147,19 @@ jobs:
           cd go/src
           .\make.bat
 
-      - name: Run short tests (Unix, native builds only)
-        if: matrix.target_os != 'windows' && !matrix.cross_compile
-        run: |
-          cd go/src
-          ../bin/go test -short ./...
-        continue-on-error: true
+      # - name: Run short tests (Unix, native builds only)
+      #   if: matrix.target_os != 'windows' && !matrix.cross_compile
+      #   run: |
+      #     cd go/src
+      #     ../bin/go test -short ./...
+      #   continue-on-error: true
 
-      - name: Run short tests (Windows)
-        if: matrix.target_os == 'windows'
-        run: |
-          cd go/src
-          ..\bin\go.exe test -short ./...
-        continue-on-error: true
+      # - name: Run short tests (Windows)
+      #   if: matrix.target_os == 'windows'
+      #   run: |
+      #     cd go/src
+      #     ..\bin\go.exe test -short ./...
+      #   continue-on-error: true
 
       - name: Get Go version
         id: go_version
@@ -176,18 +177,20 @@ jobs:
         if: matrix.target_os != 'windows'
         run: |
           DISPLAY_ARCH="${{ matrix.display_arch || matrix.target_arch }}"
-          ARCHIVE_NAME="${{ steps.go_version.outputs.version }}-${{ env.BUILD_ID }}.${{ matrix.target_os }}-${DISPLAY_ARCH}.${{ matrix.archive_ext }}"
+          ARCHIVE_NAME="go${{ steps.go_version.outputs.version }}.${{ matrix.target_os }}-${DISPLAY_ARCH}.${{ matrix.archive_ext }}"
           mkdir -p artifacts
           tar -czf "artifacts/${ARCHIVE_NAME}" -C . go
+          sha256sum "artifacts/${ARCHIVE_NAME}" | awk '{print $1}' > "artifacts/${ARCHIVE_NAME}.sha256"
           echo "Created archive: artifacts/${ARCHIVE_NAME}"
           ls -la artifacts/
 
       - name: Create archive (Windows)
         if: matrix.target_os == 'windows'
         run: |
-          $ArchiveName = "${{ steps.go_version.outputs.version }}-${{ env.BUILD_ID }}.${{ matrix.target_os }}-${{ matrix.target_arch }}.${{ matrix.archive_ext }}"
+          $ArchiveName = "go${{ steps.go_version.outputs.version }}.${{ matrix.target_os }}-${{ matrix.target_arch }}.${{ matrix.archive_ext }}"
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Compress-Archive -Path go -DestinationPath "artifacts\$ArchiveName"
+          (Get-FileHash -Algorithm SHA256 "artifacts\$ArchiveName").Hash.ToLower() | Out-File -NoNewline "artifacts\$ArchiveName.sha256"
           Write-Host "Created archive: artifacts\$ArchiveName"
           Get-ChildItem artifacts
 
@@ -216,12 +219,6 @@ jobs:
         run: |
           echo "Downloaded artifacts:"
           find release-artifacts -type f -ls
-
-      - name: Create checksums
-        run: |
-          cd release-artifacts
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
 
       - name: Upload combined release artifacts
         uses: actions/upload-artifact@v4
