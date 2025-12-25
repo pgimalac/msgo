@@ -1,0 +1,213 @@
+# Copyright (c) Microsoft Corporation.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+# This workflow builds Microsoft Go for multiple platforms
+# following the steps defined in eng/doc/DeveloperGuide.md
+
+name: "Build Microsoft Go"
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap_go_version:
+        description: 'Bootstrap Go version to use for building (e.g., 1.25.0)'
+        required: true
+        type: string
+      publish_artifacts:
+        description: 'Publish artifacts publicly'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  # Used to identify build artifacts
+  BUILD_ID: ${{ github.run_number }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.target_os }}-${{ matrix.target_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux amd64 - native build
+          - runner: ubuntu-latest
+            target_os: linux
+            target_arch: amd64
+            archive_ext: tar.gz
+            shell: bash
+
+          # Linux arm64 - native build on ARM runner
+          - runner: ubuntu-24.04-arm
+            target_os: linux
+            target_arch: arm64
+            archive_ext: tar.gz
+            shell: bash
+
+          # Windows amd64 - native build
+          - runner: windows-latest
+            target_os: windows
+            target_arch: amd64
+            archive_ext: zip
+            shell: pwsh
+
+          # Linux armv6l - cross-compile from linux-amd64
+          - runner: ubuntu-latest
+            target_os: linux
+            target_arch: arm
+            display_arch: armv6l
+            archive_ext: tar.gz
+            shell: bash
+            cross_compile: true
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
+
+      - name: Set up Go (bootstrap)
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.bootstrap_go_version }}
+          cache: false
+
+      - name: Install git-go-patch tool
+        run: go install github.com/microsoft/go-infra/cmd/git-go-patch@latest
+
+      - name: Set mock git config (required for patch apply)
+        run: |
+          git config --global user.email "build@github.actions"
+          git config --global user.name "GitHub Actions Build"
+
+      - name: Apply patches
+        run: git go-patch apply
+
+      - name: Build Go toolchain (Unix)
+        if: matrix.target_os != 'windows'
+        env:
+          GOOS: ${{ matrix.target_os }}
+          GOARCH: ${{ matrix.target_arch }}
+          GOROOT_BOOTSTRAP: ${{ env.GOROOT }}
+          # Disable CGO for cross-compilation
+          CGO_ENABLED: ${{ matrix.cross_compile && '0' || '' }}
+        run: |
+          cd go/src
+          ./make.bash
+
+      - name: Build Go toolchain (Windows)
+        if: matrix.target_os == 'windows'
+        env:
+          GOROOT_BOOTSTRAP: ${{ env.GOROOT }}
+          GOBUILDEXIT: "1"
+        run: |
+          cd go/src
+          .\make.bat
+
+      - name: Run short tests (Unix, native builds only)
+        if: matrix.target_os != 'windows' && !matrix.cross_compile
+        run: |
+          cd go/src
+          ../bin/go test -short ./...
+        continue-on-error: true
+
+      - name: Run short tests (Windows)
+        if: matrix.target_os == 'windows'
+        run: |
+          cd go/src
+          ..\bin\go.exe test -short ./...
+        continue-on-error: true
+
+      - name: Get Go version
+        id: go_version
+        shell: bash
+        run: |
+          if [ -f "VERSION" ]; then
+            VERSION=$(head -1 VERSION)
+          else
+            VERSION=$(./go/bin/go version | awk '{print $3}')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Go version: $VERSION"
+
+      - name: Create archive (Unix)
+        if: matrix.target_os != 'windows'
+        run: |
+          DISPLAY_ARCH="${{ matrix.display_arch || matrix.target_arch }}"
+          ARCHIVE_NAME="${{ steps.go_version.outputs.version }}-${{ env.BUILD_ID }}.${{ matrix.target_os }}-${DISPLAY_ARCH}.${{ matrix.archive_ext }}"
+          mkdir -p artifacts
+          tar -czf "artifacts/${ARCHIVE_NAME}" -C . go
+          echo "Created archive: artifacts/${ARCHIVE_NAME}"
+          # Create SHA256 checksum file
+          cd artifacts
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+          echo "Created checksum: ${ARCHIVE_NAME}.sha256"
+          cat "${ARCHIVE_NAME}.sha256"
+          ls -la
+
+      - name: Create archive (Windows)
+        if: matrix.target_os == 'windows'
+        run: |
+          $ArchiveName = "${{ steps.go_version.outputs.version }}-${{ env.BUILD_ID }}.${{ matrix.target_os }}-${{ matrix.target_arch }}.${{ matrix.archive_ext }}"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive -Path go -DestinationPath "artifacts\$ArchiveName"
+          Write-Host "Created archive: artifacts\$ArchiveName"
+          # Create SHA256 checksum file
+          $Hash = (Get-FileHash -Algorithm SHA256 "artifacts\$ArchiveName").Hash.ToLower()
+          "$Hash  $ArchiveName" | Out-File -FilePath "artifacts\$ArchiveName.sha256" -Encoding utf8 -NoNewline
+          Write-Host "Created checksum: $ArchiveName.sha256"
+          Get-Content "artifacts\$ArchiveName.sha256"
+          Get-ChildItem artifacts
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: msgo-${{ matrix.target_os }}-${{ matrix.display_arch || matrix.target_arch }}
+          path: artifacts/*
+          retention-days: ${{ inputs.publish_artifacts && 90 || 7 }}
+
+  # Job to create a combined release if publish_artifacts is true
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ inputs.publish_artifacts }}
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find release-artifacts -type f -ls
+
+      - name: Create checksums
+        run: |
+          cd release-artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload combined release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: msgo-release-all-platforms
+          path: release-artifacts/*
+          retention-days: 90
+
+      # Uncomment the following to create a GitHub release
+      # - name: Create GitHub Release
+      #   uses: softprops/action-gh-release@v1
+      #   if: startsWith(github.ref, 'refs/tags/')
+      #   with:
+      #     files: release-artifacts/*
+      #     generate_release_notes: true
