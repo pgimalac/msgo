@@ -45,6 +45,7 @@ The Microsoft build of Go includes [patches](/patches/) that:
 - **Add [toolset telemetry](https://devblogs.microsoft.com/go/microsoft-go-telemetry/)**, enabled by default.
 - **Disable [GOTOOLCHAIN](https://go.dev/doc/toolchain) by default** to avoid mixups with the official Go distribution.
 - **Remove use of undocumented Windows APIs** for compatibility, security, and compliance.
+- **Embed Microsoft-specific version information** into built Go binaries for [easier identification](./MicrosoftToolsetIdentification.md).
 
 The patches directory at each Git tag specifies the exact code changes we have made to the official Go toolchain of that version.
 If it's critical to you to understand the exact set of changes we've made, please review the patch files.
@@ -138,10 +139,19 @@ After switching to the Microsoft build of Go, you may encounter new build errors
 #### Cgo is not enabled
 
 ```
-Using a crypto backend requires CGO_ENABLED=1.
+Using GOEXPERIMENT=systemcrypto on Linux requires CGO_ENABLED=1.
 
-For more information, visit https://github.com/microsoft/go/tree/microsoft/main/eng/doc/fips
+Consider using our cgo-less experiment by setting GOEXPERIMENT=ms_nocgo_opensslcrypto.
+
+For more information, visit https://github.com/microsoft/go/blob/microsoft/main/eng/doc/MigrationGuide.md#cgo-is-not-enabled
 ```
+
+> [!NOTE]
+> As of Go 1.26, there is a cgo-less experiment available for Linux: `ms_nocgo_opensslcrypto`.
+> This allows the use of OpenSSL without requiring cgo.
+> Currently this experiment is supported on the following architectures: `386`, `amd64`, `arm`, `arm64`, and `riscv64`.
+>
+> While `systemcrypto` is a fully supported `GOEXPERIMENT` value (it is not "experimental"), `ms_nocgo_opensslcrypto` **is** experimental as of Go 1.26 and may have limitations.
 
 When targeting Linux, `systemcrypto` requires cgo.
 Cgo is disabled by default on some platforms or when a C compiler is not detected
@@ -359,6 +369,8 @@ If the change requires further planning and if it's acceptable for your project 
   - If you have already set `GOEXPERIMENT`, append `,nosystemcrypto` to the existing value.
 
 After that, build commands won't encounter errors related to `systemcrypto`, and the resulting program won't attempt to use system-provided cryptography at runtime.
+
+For more information about these options, see [the "Build option to use Go crypto" section of the FIPS README](fips/README.md#build-option-to-use-go-crypto-if-the-backend-compatibility-check-fails).
 
 Alternatively, if you experienced an unexpected auto-update to 1.25 that broke your project, you should downgrade to the latest version of 1.24.
 This will disable `systemcrypto` by default and give you time to plan the migration.
